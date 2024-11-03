@@ -3,9 +3,9 @@ import email
 from email.header import decode_header
 from openai import OpenAI
 import configparser
-
 import tkinter as tk
 from tkinter import ttk, messagebox
+import threading
 
 # 加载配置文件
 config = configparser.ConfigParser()
@@ -25,22 +25,19 @@ def connect_imap():
     mail.login(EMAIL_ACCOUNT, EMAIL_PASSWORD)
     return mail
 
-# 拉取最近的邮件
 # 拉取指定范围内的邮件
 def fetch_emails(mail, limit=3, start=0):
     mail.select('inbox')
     result, data = mail.search(None, 'ALL')
-    
+
     if result != 'OK':
         return []
-    
+
     email_ids = data[0].split()
 
-    # 如果start超出了实际数量，则设置为从第一封开始
     if start >= len(email_ids):
         start = 0
 
-    # 获取从start位置开始的limit封邮件
     email_ids = email_ids[-(start + limit):-start] if start > 0 else email_ids[-limit:]
     emails = []
 
@@ -49,7 +46,7 @@ def fetch_emails(mail, limit=3, start=0):
             result, message_data = mail.fetch(email_id, '(RFC822)')
             if result != 'OK':
                 continue
-            
+
             msg = email.message_from_bytes(message_data[0][1])
             emails.append(msg)
 
@@ -57,7 +54,6 @@ def fetch_emails(mail, limit=3, start=0):
             print(f"Error fetching email ID {email_id}: {e}")
 
     return emails
-
 
 # 解码邮件头字段
 def decode_header_value(value):
@@ -99,9 +95,6 @@ def extract_email_content(msg):
 
 # 调用OpenAI API进行分类
 def classify_email(headers, content):
-    print("Classifying email content...")
-
-    # 将邮件头和内容合并为一个字符串输入
     combined_content = f"""
     发件人: {headers['发件人']}
     收件人: {headers['收件人']}
@@ -138,7 +131,6 @@ def classify_email(headers, content):
     return response.choices[0].message.content
 
 # 主函数
-# 创建GUI应用
 class EmailApp:
     def __init__(self, root):
         self.root = root
@@ -161,16 +153,51 @@ class EmailApp:
         load_button = tk.Button(top_frame, text="加载邮件", command=self.load_emails)
         load_button.pack(side=tk.LEFT, padx=10)
 
+        # 进度显示标签
+        self.progress_label = tk.Label(top_frame, text="")  # 初始化为空
+        self.progress_label.pack(side=tk.LEFT, padx=5)
+
         # 创建TreeView表格
         columns = ("类型", "重要级", "发件人", "收件人", "总结", "日程")
         self.tree = ttk.Treeview(root, columns=columns, show="headings")
-        
-        # 设置列标题
+
+        # 设置列标题及其宽度，并绑定排序事件
         for col in columns:
-            self.tree.heading(col, text=col)
-            self.tree.column(col, width=150, anchor="center")
+            self.tree.heading(col, text=col, command=lambda _col=col: self.sort_column(_col, False))
+            if col == "类型" or col == "重要级":
+                self.tree.column(col, width=80, anchor="center")
+            elif col == "发件人" or col == "收件人":
+                self.tree.column(col, width=120, anchor="center")
+            elif col == "总结":
+                self.tree.column(col, width=500, anchor="w")
+            elif col == "日程":
+                self.tree.column(col, width=200, anchor="center")
 
         self.tree.pack(fill=tk.BOTH, expand=True)
+
+        # 记录排序的状态
+        self.sorting_order = {col: False for col in columns}
+
+    def sort_column(self, col, reverse):
+        # 获取列中的所有项
+        data = [(self.tree.set(item, col), item) for item in self.tree.get_children('')]
+
+        # 判断数据类型并排序
+        try:
+            data.sort(key=lambda t: float(t[0]), reverse=reverse)  # 数字排序
+        except ValueError:
+            data.sort(key=lambda t: t[0], reverse=reverse)  # 字符串排序
+
+        # 清空当前表格内容
+        for index, (val, item) in enumerate(data):
+            self.tree.move(item, '', index)
+
+        # 切换排序顺序
+        self.sorting_order[col] = not reverse
+
+        # 更新列标题显示排序状态
+        self.tree.heading(col, text=col + (" ▲" if not reverse else " ▼"),
+                          command=lambda: self.sort_column(col, not reverse))
 
     def load_emails(self):
         try:
@@ -187,22 +214,44 @@ class EmailApp:
         for item in self.tree.get_children():
             self.tree.delete(item)
 
-        for msg in emails:
-            headers = extract_email_headers(msg)
-            content = extract_email_content(msg)
-            classification = classify_email(headers, content)
+        # 使用线程处理每封邮件
+        for i, msg in enumerate(emails):
+            threading.Thread(target=self.process_email, args=(msg, i + 1, limit)).start()
 
-            # 解析分类结果并插入到TreeView
-            type_info, priority, sender, recipient, summary, schedule = self.parse_classification(classification)
-            self.tree.insert("", tk.END, values=(type_info, priority, sender, recipient, summary, schedule))
+    def process_email(self, msg, current, total):
+        headers = extract_email_headers(msg)
+        content = extract_email_content(msg)
+        classification = classify_email(headers, content)
+
+        # 解析分类结果并插入到TreeView
+        type_info, priority, sender, recipient, summary, schedule = self.parse_classification(classification)
+
+        # 在主线程中更新TreeView和进度标签
+        self.root.after(0, self.update_ui, type_info, priority, sender, recipient, summary, schedule, current, total)
+
+    def update_ui(self, type_info, priority, sender, recipient, summary, schedule, current, total):
+        # 插入数据
+        row_id = self.tree.insert("", tk.END, values=(type_info, priority, sender, recipient, summary, schedule))
+
+        # 根据重要性设置行颜色
+        if priority == "必须完成":
+            self.tree.item(row_id, tags=('red',))
+        elif priority == "重要通知":
+            self.tree.item(row_id, tags=('blue',))
+
+        # 添加样式
+        # 在 TreeView 中创建标签并设置颜色
+        self.tree.tag_configure('red', background='#FFC0C0')  # 淡红色
+        self.tree.tag_configure('blue', background='#ADD8E6')  # 淡蓝色
+
+
+        # 更新进度标签
+        self.progress_label.config(text=f"加载中 {current}/{total}")
 
     def parse_classification(self, classification):
         # 解析分类结果字符串为各个字段
         lines = classification.splitlines()
         info = {"类型": "", "重要级": "", "发件人": "", "收件人": "", "总结": "", "日程": ""}
-        print("debug+++++++")
-        print(lines)
-        print("enddebug---")
 
         for line in lines:
             for key in info.keys():
