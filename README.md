@@ -1,2 +1,8 @@
 # AI-email-assistant
- EMail Assistant with ChatGPT
+
+ e-Mail Assistant with ChatGPT
+
+
+```
+pip install -r requirements.txt
+```
