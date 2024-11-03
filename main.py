@@ -407,7 +407,7 @@ class EmailApp:
         row_id = self.tree.insert("", 0, values=(type_info, priority, date, sender, recipient, summary, schedule))
 
         # 根据重要性设置行颜色
-        if priority == "必须完成":
+        if priority == "必须完成" or  priority == "回复必要":
             self.tree.item(row_id, tags=('red',))
         elif priority == "重要通知":
             self.tree.item(row_id, tags=('blue',))
