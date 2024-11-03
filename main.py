@@ -4,6 +4,9 @@ from email.header import decode_header
 from openai import OpenAI
 import configparser
 
+import tkinter as tk
+from tkinter import ttk, messagebox
+
 # 加载配置文件
 config = configparser.ConfigParser()
 config.read('.config')
@@ -24,7 +27,7 @@ def connect_imap():
 
 # 拉取最近的邮件
 # 拉取指定范围内的邮件
-def fetch_emails(mail, limit=10, start=0):
+def fetch_emails(mail, limit=3, start=0):
     mail.select('inbox')
     result, data = mail.search(None, 'ALL')
     
@@ -118,8 +121,10 @@ def classify_email(headers, content):
                     3. 如果邮件需要回复，请总结回复的关键点。\n\
                     4. 提取日程信息，包括日期和时间（例如：xx月xx日 xx时-xx时），以及活动的地点和主题（例如，2024年11月6日 13:00 在xxx举办xxx活动）。\n\n\
                     输出格式如下，如果没有日程的话就不要添加那一行：\n\n\
-                    类型: xxxx, 重要级: xxx\n\
-                    发件人: xxx, 收件人(我，或者是全体本科生/xx书院之类的)\n\
+                    类型: xxxx\n\
+                    重要级: xxx\n\
+                    发件人: xxx\n\
+                    收件人(我 tacoin或者wangzq开头的就是我，或者是全体本科生/xx书院之类的)\n\
                     总结: 总结邮件内容，用几句话描述邮件的主要内容。\n\
                     日程: (例如：2024年11月6日 13:00 在xxx举办 xxx活动)"
             },
@@ -133,27 +138,81 @@ def classify_email(headers, content):
     return response.choices[0].message.content
 
 # 主函数
-def main():
-    mail = connect_imap()
-    emails = fetch_emails(mail, limit=20, start = 0)  # 获取最近的2封邮件
-    
-    if not emails:
-        print("No emails to process.")
-        return
-    
-    for msg in emails:
-        headers = extract_email_headers(msg)
-        content = extract_email_content(msg)
+# 创建GUI应用
+class EmailApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("邮件助手")
 
-        # print(headers)
-        # print(content)
-        
-        #组合邮件头和内容并传递给分类函数
-        classification = classify_email(headers, content)
-        # 输出结果
-        print("\n======================\n")
-        print(classification)
-        
+        # 配置布局
+        top_frame = tk.Frame(root)
+        top_frame.pack(side=tk.TOP, fill=tk.X)
 
+        tk.Label(top_frame, text="起始邮件编号:").pack(side=tk.LEFT, padx=5)
+        self.start_entry = tk.Entry(top_frame, width=5)
+        self.start_entry.pack(side=tk.LEFT)
+        self.start_entry.insert(0, "0")
+
+        tk.Label(top_frame, text="邮件数量:").pack(side=tk.LEFT, padx=5)
+        self.limit_entry = tk.Entry(top_frame, width=5)
+        self.limit_entry.pack(side=tk.LEFT)
+        self.limit_entry.insert(0, "10")
+
+        load_button = tk.Button(top_frame, text="加载邮件", command=self.load_emails)
+        load_button.pack(side=tk.LEFT, padx=10)
+
+        # 创建TreeView表格
+        columns = ("类型", "重要级", "发件人", "收件人", "总结", "日程")
+        self.tree = ttk.Treeview(root, columns=columns, show="headings")
+        
+        # 设置列标题
+        for col in columns:
+            self.tree.heading(col, text=col)
+            self.tree.column(col, width=150, anchor="center")
+
+        self.tree.pack(fill=tk.BOTH, expand=True)
+
+    def load_emails(self):
+        try:
+            start = int(self.start_entry.get())
+            limit = int(self.limit_entry.get())
+        except ValueError:
+            messagebox.showerror("错误", "请输入有效的数字")
+            return
+
+        mail = connect_imap()
+        emails = fetch_emails(mail, limit=limit, start=start)
+
+        # 清空当前表格内容
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
+        for msg in emails:
+            headers = extract_email_headers(msg)
+            content = extract_email_content(msg)
+            classification = classify_email(headers, content)
+
+            # 解析分类结果并插入到TreeView
+            type_info, priority, sender, recipient, summary, schedule = self.parse_classification(classification)
+            self.tree.insert("", tk.END, values=(type_info, priority, sender, recipient, summary, schedule))
+
+    def parse_classification(self, classification):
+        # 解析分类结果字符串为各个字段
+        lines = classification.splitlines()
+        info = {"类型": "", "重要级": "", "发件人": "", "收件人": "", "总结": "", "日程": ""}
+        print("debug+++++++")
+        print(lines)
+        print("enddebug---")
+
+        for line in lines:
+            for key in info.keys():
+                if line.startswith(f"{key}:"):
+                    info[key] = line[len(key)+1:].strip()
+
+        return info["类型"], info["重要级"], info["发件人"], info["收件人"], info["总结"], info["日程"]
+
+# 主程序
 if __name__ == "__main__":
-    main()
+    root = tk.Tk()
+    app = EmailApp(root)
+    root.mainloop()
