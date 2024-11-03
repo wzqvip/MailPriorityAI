@@ -7,6 +7,7 @@ import configparser
 import tkinter as tk
 from tkinter import ttk, messagebox
 import threading
+from datetime import datetime, timedelta
 
 # 加载配置文件
 config = configparser.ConfigParser()
@@ -27,19 +28,28 @@ def connect_imap():
     return mail
 
 # 拉取指定范围内的邮件
-def fetch_emails(mail, limit=3, start=0):
+def fetch_emails(mail, limit=3, start=0, start_date=None, end_date=None):
     mail.select('inbox')
-    result, data = mail.search(None, 'ALL')
+
+    # 按日期或数量拉取邮件
+    if start_date and end_date:
+        # 按日期拉取，构造 IMAP 搜索条件
+        since_date = datetime.strptime(start_date, "%Y-%m-%d").strftime("%d-%b-%Y")
+        before_date = datetime.strptime(end_date, "%Y-%m-%d").strftime("%d-%b-%Y")
+        result, data = mail.search(None, f'SINCE {since_date}', f'BEFORE {before_date}')
+    else:
+        # 按数量拉取
+        result, data = mail.search(None, 'ALL')
 
     if result != 'OK':
         return []
 
     email_ids = data[0].split()
+    
+    # 如果是按数量拉取，限制邮件数量
+    if not start_date and not end_date:
+        email_ids = email_ids[-limit:] if limit > 0 else email_ids
 
-    if start >= len(email_ids):
-        start = 0
-
-    email_ids = email_ids[-(start + limit):-start] if start > 0 else email_ids[-limit:]
     emails = []
 
     for email_id in email_ids:
@@ -55,6 +65,7 @@ def fetch_emails(mail, limit=3, start=0):
             print(f"Error fetching email ID {email_id}: {e}")
 
     return emails
+
 
 # 解码邮件头字段
 def decode_header_value(value):
@@ -160,6 +171,26 @@ class EmailApp:
         self.progress_label = tk.Label(top_frame, text="")  # 初始化为空
         self.progress_label.pack(side=tk.LEFT, padx=5)
 
+       # 起始日期和结束日期默认值
+        default_start_date = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
+        default_end_date = datetime.now().strftime("%Y-%m-%d")
+
+        # 起始日期输入框
+        tk.Label(top_frame, text="起始日期 (YYYY-MM-DD):").pack(side=tk.LEFT, padx=5)
+        self.start_date_entry = tk.Entry(top_frame, width=16)
+        self.start_date_entry.insert(0, default_start_date)  # 设置默认值
+        self.start_date_entry.pack(side=tk.LEFT)
+
+        # 结束日期输入框
+        tk.Label(top_frame, text="结束日期 (YYYY-MM-DD):").pack(side=tk.LEFT, padx=5)
+        self.end_date_entry = tk.Entry(top_frame, width=16)
+        self.end_date_entry.insert(0, default_end_date)  # 设置默认值
+        self.end_date_entry.pack(side=tk.LEFT)
+
+        # 直接加载邮件按钮
+        load_by_date_button = tk.Button(top_frame, text="加载邮件", command=self.load_emails_by_date)
+        load_by_date_button.pack(side=tk.LEFT, padx=5)
+
         # 创建TreeView表格
         columns = ("类型", "重要级", "日期", "发件人", "收件人", "总结", "日程")
         self.tree = ttk.Treeview(root, columns=columns, show="headings")
@@ -208,26 +239,68 @@ class EmailApp:
                           command=lambda: self.sort_column(col, not reverse))
 
     def load_emails(self):
-        try:
-            start = int(self.start_entry.get())
-            limit = int(self.limit_entry.get())
-        except ValueError:
-            messagebox.showerror("错误", "请输入有效的数字")
-            return
-
         mail = connect_imap()
-        emails = fetch_emails(mail, limit=limit, start=start)
 
-        # 重置处理计数器
+        # 检查是否按日期拉取
+        if self.fetch_by_date.get():
+            start_date = self.start_date_entry.get()
+            end_date = self.end_date_entry.get()
+
+            # 验证日期格式
+            try:
+                datetime.strptime(start_date, "%Y-%m-%d")
+                datetime.strptime(end_date, "%Y-%m-%d")
+            except ValueError:
+                messagebox.showerror("错误", "请输入有效的日期格式 (YYYY-MM-DD)")
+                return
+
+            emails = fetch_emails(mail, start_date=start_date, end_date=end_date)
+        else:
+            # 按数量拉取
+            try:
+                start = int(self.start_entry.get())
+                limit = int(self.limit_entry.get())
+            except ValueError:
+                messagebox.showerror("错误", "请输入有效的数字")
+                return
+
+            emails = fetch_emails(mail, limit=limit, start=start)
+
+        # 重置处理计数器并清空表格
         self.processed_count = 0
-        
-        # 清空当前表格内容 # FIXME:
         for item in self.tree.get_children():
             self.tree.delete(item)
 
         # 使用线程处理每封邮件
         for i, msg in enumerate(emails):
-            threading.Thread(target=self.process_email, args=(msg, i + 1, limit)).start()
+            threading.Thread(target=self.process_email, args=(msg, i + 1, len(emails))).start()
+
+    # 按日期拉取邮件的函数
+    def load_emails_by_date(self):
+        mail = connect_imap()
+
+        start_date = self.start_date_entry.get()
+        end_date = self.end_date_entry.get()
+
+        # 验证日期格式
+        try:
+            datetime.strptime(start_date, "%Y-%m-%d")
+            datetime.strptime(end_date, "%Y-%m-%d")
+        except ValueError:
+            messagebox.showerror("错误", "请输入有效的日期格式 (YYYY-MM-DD)")
+            return
+
+        # 获取符合日期范围的邮件
+        emails = fetch_emails(mail, start_date=start_date, end_date=end_date)
+
+        # 清空表格并重置计数器
+        self.processed_count = 0
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
+        # 使用线程处理每封邮件
+        for i, msg in enumerate(emails):
+            threading.Thread(target=self.process_email, args=(msg, i + 1, len(emails))).start()
 
     def process_email(self, msg, current, total):
         headers = extract_email_headers(msg)
@@ -257,7 +330,7 @@ class EmailApp:
 
         # 更新进度标签 FIXME: 这里计数有问题，修了之后可以用ifelse改成加载完成。
         self.processed_count += 1
-        self.progress_label.config(text=f"加载中 {current}/{total}") 
+        self.progress_label.config(text=f"加载中, 共计{total}") 
 
     def parse_classification(self, classification):
         # 解析分类结果字符串为各个字段
