@@ -1,6 +1,7 @@
 import imaplib
 import email
 from email.header import decode_header
+from email.utils import parsedate_to_datetime
 from openai import OpenAI
 import configparser
 import tkinter as tk
@@ -73,6 +74,8 @@ def extract_email_headers(msg):
     cc_addr = decode_header_value(msg.get("Cc", ""))
     subject = decode_header_value(msg.get("Subject", ""))
     date = msg.get("Date", "")
+
+    date = parsedate_to_datetime(date).strftime("%Y-%m-%d %H:%M:%S") if date else ""
 
     headers = {
         "发件人": from_addr,
@@ -158,7 +161,7 @@ class EmailApp:
         self.progress_label.pack(side=tk.LEFT, padx=5)
 
         # 创建TreeView表格
-        columns = ("类型", "重要级", "发件人", "收件人", "总结", "日程")
+        columns = ("类型", "重要级", "日期", "发件人", "收件人", "总结", "日程")
         self.tree = ttk.Treeview(root, columns=columns, show="headings")
 
         # 设置列标题及其宽度，并绑定排序事件
@@ -166,6 +169,8 @@ class EmailApp:
             self.tree.heading(col, text=col, command=lambda _col=col: self.sort_column(_col, False))
             if col == "类型" or col == "重要级":
                 self.tree.column(col, width=80, anchor="center")
+            elif col == "日期":
+                self.tree.column(col, width=120, anchor="center")
             elif col == "发件人" or col == "收件人":
                 self.tree.column(col, width=120, anchor="center")
             elif col == "总结":
@@ -177,6 +182,9 @@ class EmailApp:
 
         # 记录排序的状态
         self.sorting_order = {col: False for col in columns}
+
+        # 初始化处理计数器
+        self.processed_count = 0
 
     def sort_column(self, col, reverse):
         # 获取列中的所有项
@@ -210,7 +218,10 @@ class EmailApp:
         mail = connect_imap()
         emails = fetch_emails(mail, limit=limit, start=start)
 
-        # 清空当前表格内容
+        # 重置处理计数器
+        self.processed_count = 0
+        
+        # 清空当前表格内容 # FIXME:
         for item in self.tree.get_children():
             self.tree.delete(item)
 
@@ -227,11 +238,11 @@ class EmailApp:
         type_info, priority, sender, recipient, summary, schedule = self.parse_classification(classification)
 
         # 在主线程中更新TreeView和进度标签
-        self.root.after(0, self.update_ui, type_info, priority, sender, recipient, summary, schedule, current, total)
+        self.root.after(0, self.update_ui, type_info, priority, headers["日期"], sender, recipient, summary, schedule, current, total)
 
-    def update_ui(self, type_info, priority, sender, recipient, summary, schedule, current, total):
+    def update_ui(self, type_info, priority, date, sender, recipient, summary, schedule, current, total):
         # 插入数据
-        row_id = self.tree.insert("", tk.END, values=(type_info, priority, sender, recipient, summary, schedule))
+        row_id = self.tree.insert("", tk.END, values=(type_info, priority, date, sender, recipient, summary, schedule))
 
         # 根据重要性设置行颜色
         if priority == "必须完成":
@@ -244,9 +255,9 @@ class EmailApp:
         self.tree.tag_configure('red', background='#FFC0C0')  # 淡红色
         self.tree.tag_configure('blue', background='#ADD8E6')  # 淡蓝色
 
-
-        # 更新进度标签
-        self.progress_label.config(text=f"加载中 {current}/{total}")
+        # 更新进度标签 FIXME: 这里计数有问题，修了之后可以用ifelse改成加载完成。
+        self.processed_count += 1
+        self.progress_label.config(text=f"加载中 {current}/{total}") 
 
     def parse_classification(self, classification):
         # 解析分类结果字符串为各个字段
