@@ -3,15 +3,32 @@ import email
 from email.header import decode_header
 from email.utils import parsedate_to_datetime
 from openai import OpenAI
+import os
+import sys
 import configparser
 import tkinter as tk
 from tkinter import ttk, messagebox
 import threading
 from datetime import datetime, timedelta
+import time
 
 # 加载配置文件
+# 获取当前程序目录
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    try:
+        # PyInstaller创建临时文件夹，并将路径存储在 _MEIPASS
+        base_path = sys._MEIPASS
+    except AttributeError:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
+
+# 加载配置文件
+config_path = resource_path('.config')
 config = configparser.ConfigParser()
-config.read('.config')
+config.read(config_path)
+
 
 # IMAP配置
 IMAP_SERVER = config['EMAIL']['IMAP_SERVER']
@@ -217,6 +234,78 @@ class EmailApp:
         # 初始化处理计数器
         self.processed_count = 0
 
+        # 添加实时监听复选框
+        self.enable_listen_var = tk.BooleanVar()
+        self.enable_listen_var.set(False)
+        self.listen_checkbox = tk.Checkbutton(
+            top_frame, text="启用实时监听", variable=self.enable_listen_var, command=self.toggle_listen
+        )
+        self.listen_checkbox.pack(side=tk.LEFT, padx=5)
+
+        # 启动监听线程的标识
+        self.idle_thread = None
+
+    # 启用或禁用监听的函数
+    def toggle_listen(self):
+        if self.enable_listen_var.get():
+            print("实时监听已开启")
+            self.start_idle_thread()
+        else:
+            print("实时监听已关闭")
+            self.stop_idle_thread()
+
+    # 启动监听线程
+    def start_idle_thread(self):
+        if self.idle_thread is None or not self.idle_thread.is_alive():
+            self.idle_thread = threading.Thread(target=self.idle_mailbox, daemon=True)
+            self.idle_thread.start()
+
+    # 停止监听线程
+    def stop_idle_thread(self):
+        if self.idle_thread and self.idle_thread.is_alive():
+            self.idle_thread = None  # 设置为 None，让 idle_mailbox 自然结束
+
+                # 执行 IDLE 监听的函数
+    def idle_mailbox(self):
+        while self.idle_thread:
+            try:
+                # 连接到 IMAP 服务器并执行 IDLE
+                mail = connect_imap()
+                mail.select('inbox')
+                
+                # IDLE 命令等待新邮件
+                mail.send(b'0001 IDLE\r\n')
+                response = mail.readline()
+                
+                # 当有新的邮件时，服务器会通知
+                if b'EXISTS' in response:
+                    # 退出 IDLE 模式
+                    mail.send(b'DONE\r\n')
+                    mail.readline()
+                    
+                    # 处理新邮件
+                    self.handle_new_mail()
+                    
+                # 等待 10 秒后重新进入 IDLE，保持连接
+                time.sleep(10)
+
+            except Exception as e:
+                print("Error in idle_mailbox:", e)
+                time.sleep(60)  # 出现错误后等待 60 秒再重新连接
+
+    # 处理新邮件的函数
+    def handle_new_mail(self):
+        print("新邮件到达，正在处理...")
+        
+        # 加载最新邮件
+        mail = connect_imap()
+        emails = fetch_emails(mail, limit=1)  # 只加载最新的一封邮件
+
+        # 将新邮件插入表格
+        for i, msg in enumerate(emails):
+            threading.Thread(target=self.process_email, args=(msg, i + 1, len(emails))).start()
+
+
     def sort_column(self, col, reverse):
         # 获取列中的所有项
         data = [(self.tree.set(item, col), item) for item in self.tree.get_children('')]
@@ -315,7 +404,7 @@ class EmailApp:
 
     def update_ui(self, type_info, priority, date, sender, recipient, summary, schedule, current, total):
         # 插入数据
-        row_id = self.tree.insert("", tk.END, values=(type_info, priority, date, sender, recipient, summary, schedule))
+        row_id = self.tree.insert("", 0, values=(type_info, priority, date, sender, recipient, summary, schedule))
 
         # 根据重要性设置行颜色
         if priority == "必须完成":
@@ -330,7 +419,7 @@ class EmailApp:
 
         # 更新进度标签 FIXME: 这里计数有问题，修了之后可以用ifelse改成加载完成。
         self.processed_count += 1
-        self.progress_label.config(text=f"加载中, 共计{total}") 
+        self.progress_label.config(text=f"加载共计{total}") 
 
     def parse_classification(self, classification):
         # 解析分类结果字符串为各个字段
