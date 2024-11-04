@@ -181,8 +181,10 @@ class EmailApp:
         self.limit_entry.pack(side=tk.LEFT)
         self.limit_entry.insert(0, "10")
 
-        load_button = tk.Button(top_frame, text="加载邮件", command=self.load_emails)
-        load_button.pack(side=tk.LEFT, padx=10)
+        # Button to load emails by count
+        load_by_count_button = tk.Button(top_frame, text="加载邮件", command=self.load_emails)
+        load_by_count_button.pack(side=tk.LEFT, padx=10)
+
 
         # 进度显示标签
         self.progress_label = tk.Label(top_frame, text="")  # 初始化为空
@@ -204,7 +206,7 @@ class EmailApp:
         self.end_date_entry.insert(0, default_end_date)  # 设置默认值
         self.end_date_entry.pack(side=tk.LEFT)
 
-        # 直接加载邮件按钮
+        # Button to load emails by date
         load_by_date_button = tk.Button(top_frame, text="加载邮件", command=self.load_emails_by_date)
         load_by_date_button.pack(side=tk.LEFT, padx=5)
 
@@ -330,30 +332,15 @@ class EmailApp:
     def load_emails(self):
         mail = connect_imap()
 
-        # 检查是否按日期拉取
-        if self.fetch_by_date.get():
-            start_date = self.start_date_entry.get()
-            end_date = self.end_date_entry.get()
+        # 按数量拉取
+        try:
+            start = int(self.start_entry.get())
+            limit = int(self.limit_entry.get())
+        except ValueError:
+            messagebox.showerror("错误", "请输入有效的数字")
+            return
 
-            # 验证日期格式
-            try:
-                datetime.strptime(start_date, "%Y-%m-%d")
-                datetime.strptime(end_date, "%Y-%m-%d")
-            except ValueError:
-                messagebox.showerror("错误", "请输入有效的日期格式 (YYYY-MM-DD)")
-                return
-
-            emails = fetch_emails(mail, start_date=start_date, end_date=end_date)
-        else:
-            # 按数量拉取
-            try:
-                start = int(self.start_entry.get())
-                limit = int(self.limit_entry.get())
-            except ValueError:
-                messagebox.showerror("错误", "请输入有效的数字")
-                return
-
-            emails = fetch_emails(mail, limit=limit, start=start)
+        emails = fetch_emails(mail, limit=limit, start=start)
 
         # 重置处理计数器并清空表格
         self.processed_count = 0
